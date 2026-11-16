@@ -21,7 +21,8 @@ import {
   RefreshCw,
   Eye,
   Sliders,
-  Maximize2
+  Maximize2,
+  Database
 } from 'lucide-react';
 
 const STEPS = [
@@ -178,13 +179,24 @@ const FaceRegistrationPage = () => {
       const completedCount = Object.keys(updatedCaptures).length;
       if (completedCount === 5) {
         setShowReviewModal(true);
-      } else if (currentStepIndex < STEPS.length - 1) {
-        // Advance to next orientation
-        setCurrentStepIndex(currentStepIndex + 1);
+      } else {
+        // Find next incomplete step
+        const nextIncompleteIndex = STEPS.findIndex(s => !updatedCaptures[s.id]);
+        if (nextIncompleteIndex !== -1) {
+          setCurrentStepIndex(nextIncompleteIndex);
+        } else if (currentStepIndex < STEPS.length - 1) {
+          setCurrentStepIndex(currentStepIndex + 1);
+        }
       }
     } catch (err) {
       console.error("RetinaFace validation failed:", err);
-      setValidationError(err.response?.data?.detail || 'Inference error during RetinaFace validation. Please try again.');
+      const detail = err.response?.data?.detail;
+      const errorMsg = typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail)
+        ? detail.map(d => d.msg || JSON.stringify(d)).join(', ')
+        : 'Inference error during RetinaFace validation. Please try again.';
+      setValidationError(errorMsg);
     } finally {
       setIsValidating(false);
     }
@@ -192,7 +204,9 @@ const FaceRegistrationPage = () => {
 
   // Retake a specific orientation capture
   const handleRetake = (stepIndex) => {
+    if (stepIndex < 0 || stepIndex >= STEPS.length) return;
     const step = STEPS[stepIndex];
+    if (!step) return;
     const newCaptures = { ...captures };
     delete newCaptures[step.id];
     setCaptures(newCaptures);
@@ -219,21 +233,33 @@ const FaceRegistrationPage = () => {
       setSubmissionSuccess(res.data);
       setShowReviewModal(false);
 
-      // Trigger celebration confetti!
-      confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
+      // Trigger celebration confetti safely
+      try {
+        if (typeof confetti === 'function') {
+          confetti({
+            particleCount: 100,
+            spread: 70,
+            origin: { y: 0.6 }
+          });
+        }
+      } catch (confettiErr) {
+        console.warn("Confetti animation skipped:", confettiErr);
+      }
     } catch (err) {
       console.error("Dataset submission error:", err);
-      setValidationError(err.response?.data?.detail || 'Dataset registration failed during storage. Please try again.');
+      const detail = err.response?.data?.detail;
+      const errorMsg = typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail)
+        ? detail.map(d => d.msg || JSON.stringify(d)).join(', ')
+        : 'Dataset registration failed during storage. Please try again.';
+      setValidationError(errorMsg);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const currentStep = STEPS[currentStepIndex];
+  const currentStep = STEPS[currentStepIndex] || STEPS[0];
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
@@ -415,15 +441,64 @@ const FaceRegistrationPage = () => {
                   <div className="w-2 h-2 rounded-full bg-white/40"></div>
                 </div>
 
-                {/* Direction arrow indication */}
-                <div className="absolute top-4 bg-black/60 backdrop-blur-md px-3.5 py-1.5 rounded-full text-white text-xs font-semibold flex items-center space-x-2 border border-white/20">
-                  <span className="w-2 h-2 rounded-full bg-nitte-400 animate-ping"></span>
-                  <span>Target: {currentStep.label} ({currentStep.angle})</span>
+                {/* Dynamic Directional Guidance Overlay */}
+                <div className="absolute top-4 bg-black/70 backdrop-blur-md px-4 py-2 rounded-full text-white text-xs font-semibold flex items-center space-x-2 border border-white/20 shadow-lg">
+                  <span className="w-2.5 h-2.5 rounded-full bg-nitte-400 animate-ping"></span>
+                  <span className="font-bold text-nitte-200">Pose {currentStepIndex + 1} of 5:</span>
+                  <span className="text-white uppercase tracking-wider">{currentStep.label}</span>
+                  <span className="text-slate-300 font-mono text-[11px]">({currentStep.angle})</span>
                 </div>
 
-                {/* Bottom Overlay Guideline */}
-                <div className="absolute bottom-3 left-4 right-4 bg-black/60 backdrop-blur-md py-1.5 px-3 rounded-xl text-center text-white/90 text-xs font-medium border border-white/10">
-                  Position your face inside the circle and follow the step.
+                {/* Center Visual Pose Direction Indicators */}
+                {currentStep.id === 'left' && (
+                  <div className="absolute left-6 top-1/2 -translate-y-1/2 flex flex-col items-center space-y-1 bg-black/60 backdrop-blur-md px-3 py-2 rounded-xl border border-white/20 animate-pulse">
+                    <ArrowLeft className="w-7 h-7 text-amber-300" />
+                    <span className="text-[10px] font-bold text-amber-200 uppercase tracking-wider">Turn Left</span>
+                  </div>
+                )}
+
+                {currentStep.id === 'right' && (
+                  <div className="absolute right-6 top-1/2 -translate-y-1/2 flex flex-col items-center space-y-1 bg-black/60 backdrop-blur-md px-3 py-2 rounded-xl border border-white/20 animate-pulse">
+                    <ArrowRight className="w-7 h-7 text-amber-300" />
+                    <span className="text-[10px] font-bold text-amber-200 uppercase tracking-wider">Turn Right</span>
+                  </div>
+                )}
+
+                {currentStep.id === 'up' && (
+                  <div className="absolute top-14 left-1/2 -translate-x-1/2 flex items-center space-x-1.5 bg-black/60 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-white/20 animate-pulse">
+                    <ArrowUp className="w-5 h-5 text-amber-300" />
+                    <span className="text-[11px] font-bold text-amber-200 uppercase tracking-wider">Tilt Head Upward</span>
+                  </div>
+                )}
+
+                {currentStep.id === 'down' && (
+                  <div className="absolute bottom-16 left-1/2 -translate-x-1/2 flex items-center space-x-1.5 bg-black/60 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-white/20 animate-pulse">
+                    <ArrowDown className="w-5 h-5 text-amber-300" />
+                    <span className="text-[11px] font-bold text-amber-200 uppercase tracking-wider">Tilt Head Downward</span>
+                  </div>
+                )}
+
+                {currentStep.id === 'forward' && (
+                  <div className="absolute top-14 left-1/2 -translate-x-1/2 flex items-center space-x-1.5 bg-black/60 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-white/20">
+                    <Eye className="w-4 h-4 text-emerald-300" />
+                    <span className="text-[11px] font-bold text-emerald-200 uppercase tracking-wider">Look Directly Forward</span>
+                  </div>
+                )}
+
+                {/* Bottom Overlay Guideline / Active Error Guidance */}
+                <div className={`absolute bottom-3 left-4 right-4 backdrop-blur-md py-2 px-3.5 rounded-xl text-center text-xs font-semibold border transition-all ${
+                  validationError
+                    ? 'bg-red-950/80 text-red-200 border-red-500/40'
+                    : 'bg-black/65 text-white/90 border-white/10'
+                }`}>
+                  {validationError ? (
+                    <span className="flex items-center justify-center space-x-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                      <span>{validationError}</span>
+                    </span>
+                  ) : (
+                    <span>{currentStep.desc}</span>
+                  )}
                 </div>
               </div>
             )}
@@ -447,30 +522,41 @@ const FaceRegistrationPage = () => {
 
           {/* DYNAMIC CAPTURE BUTTON */}
           <div className="w-full mt-4 flex items-center space-x-3">
-            <button
-              type="button"
-              onClick={handleCapture}
-              disabled={!isCameraActive || isValidating}
-              className="flex-1 py-3.5 bg-gradient-to-r from-nitte-800 to-nitte-600 hover:from-nitte-900 hover:to-nitte-700 text-white font-bold text-sm rounded-xl shadow-md shadow-nitte-800/25 flex items-center justify-center space-x-2 disabled:opacity-50 transition-all cursor-pointer"
-            >
-              {isValidating ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin"></div>
-                  <span>RetinaFace Validating...</span>
-                </>
-              ) : (
-                <>
-                  <Camera className="w-4 h-4" />
-                  <span>CAPTURE ({currentStepIndex + 1} / 5)</span>
-                </>
-              )}
-            </button>
+            {Object.keys(captures).length === 5 ? (
+              <button
+                type="button"
+                onClick={() => setShowReviewModal(true)}
+                className="flex-1 py-3.5 bg-gradient-to-r from-emerald-700 to-teal-700 hover:from-emerald-800 hover:to-teal-800 text-white font-bold text-sm rounded-xl shadow-md shadow-emerald-800/25 flex items-center justify-center space-x-2 transition-all cursor-pointer"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>ALL 5 POSES CAPTURED — REVIEW & SUBMIT</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCapture}
+                disabled={!isCameraActive || isValidating}
+                className="flex-1 py-3.5 bg-gradient-to-r from-nitte-800 to-nitte-600 hover:from-nitte-900 hover:to-nitte-700 text-white font-bold text-sm rounded-xl shadow-md shadow-nitte-800/25 flex items-center justify-center space-x-2 disabled:opacity-50 transition-all cursor-pointer"
+              >
+                {isValidating ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin"></div>
+                    <span>RetinaFace Validating...</span>
+                  </>
+                ) : (
+                  <>
+                    <Camera className="w-4 h-4" />
+                    <span>CAPTURE ({currentStepIndex + 1} / 5: {currentStep.label})</span>
+                  </>
+                )}
+              </button>
+            )}
 
             {Object.keys(captures).length > 0 && (
               <button
                 type="button"
                 onClick={() => setShowReviewModal(true)}
-                className="px-4 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs rounded-xl flex items-center space-x-1"
+                className="px-4 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs rounded-xl flex items-center space-x-1 transition-all cursor-pointer"
               >
                 <Eye className="w-4 h-4" />
                 <span>Review ({Object.keys(captures).length}/5)</span>

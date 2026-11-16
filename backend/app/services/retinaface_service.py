@@ -23,6 +23,21 @@ class RetinaFaceService:
             raise ValueError("Unable to decode image data into OpenCV format")
         return img
 
+    @staticmethod
+    def to_serializable(val: Any) -> Any:
+        """Converts numpy types (ndarray, float32, int64, etc.) recursively into native Python types for JSON serialization."""
+        if isinstance(val, np.ndarray):
+            return val.tolist()
+        elif isinstance(val, (np.floating, np.float32, np.float64)):
+            return float(val)
+        elif isinstance(val, (np.integer, np.int32, np.int64)):
+            return int(val)
+        elif isinstance(val, dict):
+            return {str(k): RetinaFaceService.to_serializable(v) for k, v in val.items()}
+        elif isinstance(val, (list, tuple)):
+            return [RetinaFaceService.to_serializable(x) for x in val]
+        return val
+
     @classmethod
     def validate_face_capture(
         cls,
@@ -92,9 +107,17 @@ class RetinaFaceService:
                 "confidence": round(float(score), 3),
             }
 
+        # Check if face boundary is clipping the frame edge
+        if x1 < 0.02 * w or y1 < 0.02 * h or x2 > 0.98 * w or y2 > 0.98 * h:
+            return {
+                "is_valid": False,
+                "message": "Face is partially outside the camera frame. Please move into the center circle.",
+                "face_count": 1,
+                "confidence": round(float(score), 3),
+            }
+
         # Check face size
         # Face must occupy at least 15% of frame dimension and at most 85%
-        min_dim = min(w, h)
         if face_w < 0.15 * w or face_h < 0.15 * h:
             return {
                 "is_valid": False,
@@ -129,50 +152,382 @@ class RetinaFaceService:
                 "confidence": round(float(score), 3),
             }
 
-        # Landmark and orientation guidance
+        # Landmark extraction and validation
         landmarks = face_info.get("landmarks", {})
-        orientation_note = ""
+        if not ("right_eye" in landmarks and "left_eye" in landmarks and "nose" in landmarks):
+            return {
+                "is_valid": False,
+                "message": "Essential facial landmarks not detected. Please face the camera clearly.",
+                "face_count": 1,
+                "confidence": round(float(score), 3),
+            }
 
-        # Basic landmark check: right_eye, left_eye, nose
-        if "right_eye" in landmarks and "left_eye" in landmarks and "nose" in landmarks:
-            re = landmarks["right_eye"]
-            le = landmarks["left_eye"]
-            nose = landmarks["nose"]
-            
-            # Distance from nose to right eye vs left eye
-            dist_to_re = abs(nose[0] - re[0])
-            dist_to_le = abs(nose[0] - le[0])
-            total_eye_dist = abs(le[0] - re[0]) if abs(le[0] - re[0]) > 0 else 1.0
+        re = np.array(landmarks["right_eye"], dtype=np.float64)
+        le = np.array(landmarks["left_eye"], dtype=np.float64)
+        nose = np.array(landmarks["nose"], dtype=np.float64)
+        rm = np.array(landmarks.get("mouth_right", [re[0], re[1] + (nose[1] - re[1]) * 1.6]), dtype=np.float64)
+        lm = np.array(landmarks.get("mouth_left", [le[0], le[1] + (nose[1] - le[1]) * 1.6]), dtype=np.float64)
 
-            # Yaw ratio
-            yaw_ratio = (dist_to_re - dist_to_le) / total_eye_dist
+        # Check if landmarks are partially outside frame
+        for pt in [re, le, nose, rm, lm]:
+            if pt[0] < 0.01 * w or pt[0] > 0.99 * w or pt[1] < 0.01 * h or pt[1] > 0.99 * h:
+                return {
+                    "is_valid": False,
+                    "message": "Facial features are partially out of frame. Please position your face inside the circle.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                }
 
-            # Vertical eye-nose distance
-            eye_y = (re[1] + le[1]) / 2.0
-            nose_drop = nose[1] - eye_y
+        # =========================================================================
+        # HEAD-POSE ESTIMATION: Geometric Landmarks & OpenCV solvePnP
+        # =========================================================================
 
-            # Orientation analysis
-            if requested_orientation == "left" and yaw_ratio > 0.15:
-                orientation_note = " (Turned left orientation detected)"
-            elif requested_orientation == "right" and yaw_ratio < -0.15:
-                orientation_note = " (Turned right orientation detected)"
-            elif requested_orientation == "up" and nose_drop < (face_h * 0.25):
-                orientation_note = " (Tilted up orientation detected)"
-            elif requested_orientation == "down" and nose_drop > (face_h * 0.40):
-                orientation_note = " (Tilted down orientation detected)"
-            elif requested_orientation == "forward":
-                orientation_note = " (Frontal orientation confirmed)"
+        # 1. Roll analysis (in-plane tilt)
+        dx_eyes = float(le[0] - re[0])
+        dy_eyes = float(le[1] - re[1])
+        roll_deg = float(np.degrees(np.arctan2(dy_eyes, dx_eyes)))
+
+        if abs(roll_deg) > 20.0:
+            return {
+                "is_valid": False,
+                "message": "Your head is tilted sideways. Please keep your head upright.",
+                "face_count": 1,
+                "confidence": round(float(score), 3),
+            }
+
+        # 2. Yaw analysis (Horizontal rotation: Left / Right)
+        # Note: In raw camera image, subject's anatomical left is image-right (larger X).
+        # When turning to user's LEFT: nose shifts towards left eye (image-right) -> dist_re > dist_le -> yaw_ratio > 0.
+        # When turning to user's RIGHT: nose shifts towards right eye (image-left) -> dist_le > dist_re -> yaw_ratio < 0.
+        dist_re_x = float(nose[0] - re[0])
+        dist_le_x = float(le[0] - nose[0])
+        total_x = dist_re_x + dist_le_x
+        if total_x < 1e-4:
+            total_x = 1.0
+        yaw_ratio = (dist_re_x - dist_le_x) / total_x
+
+        # 3. Pitch analysis (Vertical tilt: Up / Down)
+        # In image coords, Y=0 is top.
+        # When tilting UP: nose moves towards eye line -> (nose_y - eye_y) shrinks -> pitch_ratio < 0.38.
+        # When tilting DOWN: nose moves towards mouth line -> (nose_y - eye_y) grows -> pitch_ratio > 0.63.
+        eye_y = float(re[1] + le[1]) / 2.0
+        mouth_y = float(rm[1] + lm[1]) / 2.0
+        total_y = mouth_y - eye_y
+        if total_y < 1e-4:
+            total_y = 1.0
+        pitch_ratio = float(nose[1] - eye_y) / total_y
+
+        # 4. 3D Head Pose via OpenCV solvePnP
+        pnp_yaw, pnp_pitch, pnp_roll = 0.0, 0.0, 0.0
+        try:
+            model_points = np.array([
+                (0.0, 0.0, 0.0),             # Nose tip
+                (-33.0, -32.0, -28.0),        # Right eye
+                (33.0, -32.0, -28.0),         # Left eye
+                (-26.0, 32.0, -28.0),         # Right mouth
+                (26.0, 32.0, -28.0)           # Left mouth
+            ], dtype=np.float64)
+
+            image_points = np.array([nose, re, le, rm, lm], dtype=np.float64)
+            focal_length = float(w)
+            center = (w / 2.0, h / 2.0)
+            camera_matrix = np.array([
+                [focal_length, 0, center[0]],
+                [0, focal_length, center[1]],
+                [0, 0, 1]
+            ], dtype=np.float64)
+            dist_coeffs = np.zeros((4, 1), dtype=np.float64)
+
+            pnp_ok, rvec, tvec = cv2.solvePnP(
+                model_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_EPNP
+            )
+            if pnp_ok:
+                R, _ = cv2.Rodrigues(rvec)
+                angles, _, _, _, _, _ = cv2.RQDecomp3x3(R)
+                pnp_pitch, pnp_yaw, pnp_roll = angles
+        except Exception:
+            pass
+
+        pose_metrics = {
+            "yaw_ratio": round(yaw_ratio, 3),
+            "pitch_ratio": round(pitch_ratio, 3),
+            "roll_deg": round(roll_deg, 1),
+            "pnp_yaw": round(float(pnp_yaw), 1),
+            "pnp_pitch": round(float(pnp_pitch), 1),
+            "pnp_roll": round(float(pnp_roll), 1),
+        }
+
+        # =========================================================================
+        # 5 STRICT ORIENTATION RULES & USER GUIDANCE
+        # =========================================================================
+        req = requested_orientation.lower()
+
+        if req == "forward":
+            if yaw_ratio > 0.20:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is turned to the left. Please look directly forward at the camera.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if yaw_ratio < -0.20:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is turned to the right. Please look directly forward at the camera.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if pitch_ratio < 0.38:
+                return {
+                    "is_valid": False,
+                    "message": "Your head is tilted upward. Please look straight forward at the camera.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if pitch_ratio > 0.62:
+                return {
+                    "is_valid": False,
+                    "message": "Your head is tilted downward. Please look straight forward at the camera.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            return {
+                "is_valid": True,
+                "message": "Frontal pose verified successfully.",
+                "face_count": 1,
+                "bounding_box": {"x": int(x1), "y": int(y1), "w": int(face_w), "h": int(face_h)},
+                "confidence": round(float(score), 3),
+                "landmarks": cls.to_serializable(landmarks),
+                "pose_metrics": pose_metrics,
+            }
+
+        elif req == "left":
+            if yaw_ratio <= -0.15:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is turned to the right. Please turn left as requested.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if -0.15 < yaw_ratio < 0.15 and 0.40 <= pitch_ratio <= 0.60:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is currently facing forward. Turn left to continue.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if 0.15 <= yaw_ratio < 0.25:
+                return {
+                    "is_valid": False,
+                    "message": "Please turn your head further to the left.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if yaw_ratio > 0.85:
+                return {
+                    "is_valid": False,
+                    "message": "You have turned too far to the left. Please face slightly more towards the camera.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if pitch_ratio < 0.32:
+                return {
+                    "is_valid": False,
+                    "message": "Your head is tilted upward. Please keep your head level while turning left.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if pitch_ratio > 0.68:
+                return {
+                    "is_valid": False,
+                    "message": "Your head is tilted downward. Please keep your head level while turning left.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            return {
+                "is_valid": True,
+                "message": "Left head orientation verified successfully.",
+                "face_count": 1,
+                "bounding_box": {"x": int(x1), "y": int(y1), "w": int(face_w), "h": int(face_h)},
+                "confidence": round(float(score), 3),
+                "landmarks": cls.to_serializable(landmarks),
+                "pose_metrics": pose_metrics,
+            }
+
+        elif req == "right":
+            if yaw_ratio >= 0.15:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is turned to the left. Please turn right as requested.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if -0.15 < yaw_ratio < 0.15 and 0.40 <= pitch_ratio <= 0.60:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is currently facing forward. Turn right to continue.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if -0.25 < yaw_ratio <= -0.15:
+                return {
+                    "is_valid": False,
+                    "message": "Please turn your head further to the right.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if yaw_ratio < -0.85:
+                return {
+                    "is_valid": False,
+                    "message": "You have turned too far to the right. Please face slightly more towards the camera.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if pitch_ratio < 0.32:
+                return {
+                    "is_valid": False,
+                    "message": "Your head is tilted upward. Please keep your head level while turning right.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if pitch_ratio > 0.68:
+                return {
+                    "is_valid": False,
+                    "message": "Your head is tilted downward. Please keep your head level while turning right.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            return {
+                "is_valid": True,
+                "message": "Right head orientation verified successfully.",
+                "face_count": 1,
+                "bounding_box": {"x": int(x1), "y": int(y1), "w": int(face_w), "h": int(face_h)},
+                "confidence": round(float(score), 3),
+                "landmarks": cls.to_serializable(landmarks),
+                "pose_metrics": pose_metrics,
+            }
+
+        elif req == "up":
+            if pitch_ratio >= 0.62:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is tilted downward. Please tilt your face upward as requested.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if 0.42 <= pitch_ratio < 0.62 and abs(yaw_ratio) <= 0.20:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is currently facing forward. Please tilt your face upward.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if 0.38 < pitch_ratio < 0.42:
+                return {
+                    "is_valid": False,
+                    "message": "Please tilt your face slightly more upward.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if pitch_ratio < 0.08:
+                return {
+                    "is_valid": False,
+                    "message": "Head is tilted too far upward. Please lower your chin slightly.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if abs(yaw_ratio) > 0.30:
+                return {
+                    "is_valid": False,
+                    "message": "Your head is turned sideways. Please face forward while tilting upward.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            return {
+                "is_valid": True,
+                "message": "Upward head tilt verified successfully.",
+                "face_count": 1,
+                "bounding_box": {"x": int(x1), "y": int(y1), "w": int(face_w), "h": int(face_h)},
+                "confidence": round(float(score), 3),
+                "landmarks": cls.to_serializable(landmarks),
+                "pose_metrics": pose_metrics,
+            }
+
+        elif req == "down":
+            if pitch_ratio <= 0.38:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is tilted upward. Please tilt your face downward as requested.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if 0.38 < pitch_ratio <= 0.58 and abs(yaw_ratio) <= 0.20:
+                return {
+                    "is_valid": False,
+                    "message": "Your face is currently facing forward. Please tilt your face downward.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if 0.58 < pitch_ratio < 0.63:
+                return {
+                    "is_valid": False,
+                    "message": "Please tilt your face slightly more downward.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if pitch_ratio > 0.92:
+                return {
+                    "is_valid": False,
+                    "message": "Head is tilted too far downward. Please raise your chin slightly.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            if abs(yaw_ratio) > 0.30:
+                return {
+                    "is_valid": False,
+                    "message": "Your head is turned sideways. Please face forward while tilting downward.",
+                    "face_count": 1,
+                    "confidence": round(float(score), 3),
+                    "pose_metrics": pose_metrics,
+                }
+            return {
+                "is_valid": True,
+                "message": "Downward head tilt verified successfully.",
+                "face_count": 1,
+                "bounding_box": {"x": int(x1), "y": int(y1), "w": int(face_w), "h": int(face_h)},
+                "confidence": round(float(score), 3),
+                "landmarks": cls.to_serializable(landmarks),
+                "pose_metrics": pose_metrics,
+            }
 
         return {
-            "is_valid": True,
-            "message": f"Face detected successfully for {requested_orientation} orientation{orientation_note}.",
+            "is_valid": False,
+            "message": f"Unsupported requested orientation: {requested_orientation}",
             "face_count": 1,
-            "bounding_box": {
-                "x": int(x1),
-                "y": int(y1),
-                "w": int(face_w),
-                "h": int(face_h),
-            },
             "confidence": round(float(score), 3),
-            "landmarks": landmarks,
         }

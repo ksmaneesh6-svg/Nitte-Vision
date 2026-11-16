@@ -53,7 +53,7 @@ const MyDatasetPage = () => {
   const isCompleted = dataset?.capture_status === 'COMPLETED';
 
   // Empty state if not completed
-  if (!isCompleted || !dataset.images || dataset.images.length === 0) {
+  if (!isCompleted || !dataset?.images || dataset.images.length === 0) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-16 text-center space-y-6">
         <div className="w-16 h-16 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center mx-auto">

@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
 import ProtectedRoute from './components/ProtectedRoute';
+import ErrorBoundary from './components/ErrorBoundary';
 
 import AuthPage from './pages/AuthPage';
 import StudentDashboard from './pages/StudentDashboard';
@@ -30,61 +31,63 @@ function App() {
       <Navbar />
 
       <main className="flex-1">
-        <Routes>
-          {/* Public Authentication routes */}
-          <Route
-            path="/login"
-            element={
-              user ? (
-                user.role === 'student' ? <Navigate to="/dashboard" replace /> :
-                user.role === 'faculty' ? <Navigate to="/faculty" replace /> :
-                <Navigate to="/admin" replace />
-              ) : (
-                <AuthPage initialTab="login" />
-              )
-            }
-          />
-          <Route
-            path="/register"
-            element={
-              user ? <Navigate to="/dashboard" replace /> : <AuthPage initialTab="register" />
-            }
-          />
+        <ErrorBoundary>
+          <Routes>
+            {/* Public Authentication routes */}
+            <Route
+              path="/login"
+              element={
+                user ? (
+                  user.role === 'student' ? <Navigate to="/dashboard" replace /> :
+                  user.role === 'faculty' ? <Navigate to="/faculty" replace /> :
+                  <Navigate to="/admin" replace />
+                ) : (
+                  <AuthPage initialTab="login" />
+                )
+              }
+            />
+            <Route
+              path="/register"
+              element={
+                user ? <Navigate to="/dashboard" replace /> : <AuthPage initialTab="register" />
+              }
+            />
 
-          {/* Student Protected Routes */}
-          <Route element={<ProtectedRoute allowedRoles={['student']} />}>
-            <Route path="/dashboard" element={<StudentDashboard />} />
-            <Route path="/face-registration" element={<FaceRegistrationPage />} />
-            <Route path="/my-dataset" element={<MyDatasetPage />} />
-          </Route>
+            {/* Student Protected Routes */}
+            <Route element={<ProtectedRoute allowedRoles={['student']} />}>
+              <Route path="/dashboard" element={<StudentDashboard />} />
+              <Route path="/face-registration" element={<FaceRegistrationPage />} />
+              <Route path="/my-dataset" element={<MyDatasetPage />} />
+            </Route>
 
-          {/* Faculty Protected Routes */}
-          <Route element={<ProtectedRoute allowedRoles={['faculty', 'admin']} />}>
-            <Route path="/faculty" element={<FacultyDashboard />} />
-          </Route>
+            {/* Faculty Protected Routes */}
+            <Route element={<ProtectedRoute allowedRoles={['faculty', 'admin']} />}>
+              <Route path="/faculty" element={<FacultyDashboard />} />
+            </Route>
 
-          {/* Admin Protected Routes */}
-          <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
-            <Route path="/admin" element={<AdminDashboard />} />
-          </Route>
+            {/* Admin Protected Routes */}
+            <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+              <Route path="/admin" element={<AdminDashboard />} />
+            </Route>
 
-          {/* Root Redirect */}
-          <Route
-            path="/"
-            element={
-              user ? (
-                user.role === 'student' ? <Navigate to="/dashboard" replace /> :
-                user.role === 'faculty' ? <Navigate to="/faculty" replace /> :
-                <Navigate to="/admin" replace />
-              ) : (
-                <Navigate to="/login" replace />
-              )
-            }
-          />
+            {/* Root Redirect */}
+            <Route
+              path="/"
+              element={
+                user ? (
+                  user.role === 'student' ? <Navigate to="/dashboard" replace /> :
+                  user.role === 'faculty' ? <Navigate to="/faculty" replace /> :
+                  <Navigate to="/admin" replace />
+                ) : (
+                  <Navigate to="/login" replace />
+                )
+              }
+            />
 
-          {/* Catch-all */}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+            {/* Catch-all */}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   );

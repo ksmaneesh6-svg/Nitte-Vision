@@ -80,6 +80,7 @@ class ValidationResult(BaseModel):
     bounding_box: Optional[Dict[str, int]] = None
     confidence: Optional[float] = None
     landmarks: Optional[Dict[str, Any]] = None
+    pose_metrics: Optional[Dict[str, Any]] = None
 
 class SingleCaptureSubmission(BaseModel):
     orientation: str = Field(..., pattern="^(forward|left|right|up|down)$")
