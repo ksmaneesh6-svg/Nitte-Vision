@@ -7,13 +7,15 @@
 
 ---
 
-## 1. Environment & Tools
+## 1. Environment & Live Services
 - **OS**: Windows 11 / x64
 - **Python**: 3.11.3 (Virtual environment in `backend/venv`)
 - **Node.js**: v24.22.1 / npm 11.19.1
 - **Database**: MySQL Server 8.0 Community Server (Running on port 3307, Schema: `nittevision`)
+- **Backend Server**: Uvicorn running live on [http://127.0.0.1:8000](http://127.0.0.1:8000) (Interactive Swagger docs: `/docs`)
+- **Frontend Server**: Vite dev server running live on [http://localhost:5173](http://localhost:5173)
 - **Computer Vision**: RetinaFace (ONNX Runtime inference engine with verified weights)
-- **Git**: Initialized (`git version 2.56.0.windows.2`)
+- **Git**: Initialized & all 47 project files committed (`039d841`)
 
 ---
 
@@ -50,10 +52,14 @@
   - Admin console with real-time statistics, student directory, dataset audit, and CSV export.
 - [x] **Integration Testing**:
   - `backend/test_pipeline.py` verified 100% pass across all 9 workflow stages.
+- [x] **Git Version Control**:
+  - Committed 47 files with 8,646 insertions to local `master` branch.
 
 ---
 
 ## 3. Working API Endpoints
+- `GET /` - Root health and platform metadata
+- `GET /health` - Service health status
 - `POST /api/v1/auth/register` - Student registration & class auto-assignment
 - `POST /api/v1/auth/login` - JWT authentication
 - `GET /api/v1/auth/me` - Authenticated profile
@@ -76,7 +82,7 @@
 
 ---
 
-## 4. Pending Modules
-- [ ] Git commit of all verified files to local repository.
-- [ ] Start background FastAPI backend server and Vite frontend server.
-- [ ] Verify live application connectivity in browser.
+## 4. Testing Results
+- Automated End-to-End Suite (`test_pipeline.py`): **100% Passed (9/9 Stages)**
+- Image Storage Count Verification: **30 records per student confirmed in MySQL LONGBLOB**
+- Frontend Production Bundle: **Verified (dist build complete)**
