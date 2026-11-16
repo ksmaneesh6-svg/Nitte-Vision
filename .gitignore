@@ -60,3 +60,30 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
+
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Biometric data and datasets
+uploads/
+datasets/
+face_dataset/
+student_faces/
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.bmp
+
+# Public website assets (explicitly unignored)
+!frontend/public/nitte-campus-left-2x.jpg
+!frontend/public/nitte-campus-reference-left.jpg
+!frontend/public/nitte-logo.jpg
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
